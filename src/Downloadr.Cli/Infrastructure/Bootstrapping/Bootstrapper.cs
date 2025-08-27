@@ -5,12 +5,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Serilog;
 using Spectre.Console;
 using Spectre.Console.Cli;
-using Downloadr.Cli.Features.Persistence;
-using Downloadr.Cli.Features.Queue;
+using Features.Persistence;
+using Features.Queue;
 using Downloadr.Cli.Infrastructure.Configuration;
 using Microsoft.Extensions.Options;
-using Downloadr.Cli.Features.Download;
-using Downloadr.Cli.Features.Ui;
+using Features.Download;
+using Features.Ui;
 
 public class Bootstrapper
 {
@@ -36,7 +36,7 @@ public class Bootstrapper
         app.Configure(config =>
         {
             config.SetApplicationName("downloadr")
-                  .SetApplicationVersion("1.0.0")
+                  .SetApplicationVersion(System.Reflection.Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0.0.0-dev")
                   .ConfigureCommands()
                   .SetHelpProvider(new CliHelpProvider(config.Settings))
                   .ValidateExamples()

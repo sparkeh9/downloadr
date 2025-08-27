@@ -11,4 +11,7 @@ public interface IDownloadEngine
     void Cancel(Guid itemId);
     void PauseAll();
     void ResumeAll();
+    void CancelAll();
+    int GetDesiredConcurrency();
+    void SetDesiredConcurrency(int value);
 }

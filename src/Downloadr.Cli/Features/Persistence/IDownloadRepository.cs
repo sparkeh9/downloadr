@@ -2,7 +2,7 @@ namespace Downloadr.Cli.Features.Persistence;
 
 using System;
 using System.Collections.Generic;
-using Downloadr.Cli.Features.Domain;
+using Domain;
 
 public interface IDownloadRepository
 {

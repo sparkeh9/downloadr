@@ -6,8 +6,8 @@ using System.Linq;
 using System.Threading;
 using Spectre.Console;
 using Spectre.Console.Cli;
-using Downloadr.Cli.Features.Queue;
-using Downloadr.Cli.Features.Download;
+using Queue;
+using Download;
 using Spectre.Console.Rendering;
 
 public sealed class TopCommand : Command<TopCommand.Settings>

@@ -4,8 +4,8 @@ using System;
 using System.Collections.Generic;
 using Spectre.Console;
 using Spectre.Console.Cli;
-using Downloadr.Cli.Features.Ui;
-using Downloadr.Cli.Infrastructure.Configuration;
+using Ui;
+using Infrastructure.Configuration;
 
 public sealed class QueueCommand : Command<QueueCommand.Settings>
 {

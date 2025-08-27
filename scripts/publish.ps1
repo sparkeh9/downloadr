@@ -20,12 +20,23 @@ $targets = @(
   @{ Rid = "linux-x64"; Ext = ".tar.gz" }
 )
 
-$versionSuffix = ""
-if ($null -ne $VersionTag -and $VersionTag -ne "") { $versionSuffix = "-" + $VersionTag }
+$chosenVersion = $VersionTag
+if (-not $chosenVersion -or $chosenVersion -eq "") {
+  $input = Read-Host "Enter version (e.g. v1.2.3). Press Enter for 0.0.0-dev"
+  if (-not $input -or $input -eq "") { $input = "0.0.0-dev" }
+  $chosenVersion = $input
+}
+
+$versionSuffix = "-" + $chosenVersion
+
+# Derive assembly version properties
+$pVersion = $chosenVersion
+$fileVersion = ($chosenVersion -replace "[^0-9\.].*$", "")
+if (-not $fileVersion) { $fileVersion = "0.0.0.0" }
 
 foreach ($t in $targets) {
   $outDir = Join-Path $dist $t.Rid
-  dotnet publish $project -c $Configuration -r $t.Rid --self-contained true /p:PublishSingleFile=true /p:AssemblyName=downloadr -o $outDir
+  dotnet publish $project -c $Configuration -r $t.Rid --self-contained true /p:PublishSingleFile=true /p:AssemblyName=downloadr /p:Version=$pVersion /p:FileVersion=$fileVersion /p:AssemblyVersion=$fileVersion -o $outDir
 
   Push-Location $dist
   if ($t.Ext -eq ".zip") {

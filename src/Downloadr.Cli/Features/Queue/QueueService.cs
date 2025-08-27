@@ -3,8 +3,8 @@ namespace Downloadr.Cli.Features.Queue;
 using System;
 using System.Collections.Generic;
 using System.Linq;
-using Downloadr.Cli.Features.Domain;
-using Downloadr.Cli.Features.Persistence;
+using Domain;
+using Persistence;
 
 public interface IQueueService
 {
@@ -26,17 +26,17 @@ public sealed class QueueService : IQueueService
 
     public void AddRange(IEnumerable<Uri> urls, string destinationDirectory)
     {
-        if (!System.IO.Directory.Exists(destinationDirectory))
+        if (!Directory.Exists(destinationDirectory))
         {
-            System.IO.Directory.CreateDirectory(destinationDirectory);
+            Directory.CreateDirectory(destinationDirectory);
         }
         foreach (var url in urls)
         {
-            var fileName = url.Segments.LastOrDefault()?.Trim('/') ?? url.Host;
+            var fileName = Extensions.UriExtensions.ToSafeFileName(url);
             var item = new DownloadItem
             {
                 Url = url,
-                DestinationPath = System.IO.Path.Combine(destinationDirectory, fileName),
+                DestinationPath = Path.Combine(destinationDirectory, fileName),
                 Status = DownloadStatus.Queued
             };
             repository.Upsert(item);
@@ -57,9 +57,9 @@ public sealed class QueueService : IQueueService
         foreach (var item in itemsToClear)
         {
             var partPath = item.DestinationPath + ".part";
-            if (System.IO.File.Exists(partPath))
+            if (File.Exists(partPath))
             {
-                try { System.IO.File.Delete(partPath); } catch { /* ignore */ }
+                try { File.Delete(partPath); } catch { /* ignore */ }
             }
         }
 
@@ -72,13 +72,15 @@ public sealed class QueueService : IQueueService
         if (item != null)
         {
             var partPath = item.DestinationPath + ".part";
-            if (System.IO.File.Exists(partPath))
+            if (File.Exists(partPath))
             {
-                try { System.IO.File.Delete(partPath); } catch { /* ignore */ }
+                try { File.Delete(partPath); } catch { /* ignore */ }
             }
         }
         repository.Delete(id);
     }
+
+    
 }
 
 

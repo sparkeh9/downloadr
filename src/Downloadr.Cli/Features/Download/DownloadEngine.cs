@@ -11,10 +11,10 @@ using System.Threading;
 using System.Threading.Channels;
 using System.Threading.Tasks;
 using System.Collections.Concurrent;
-using Downloadr.Cli.Features.Domain;
-using Downloadr.Cli.Features.Persistence;
-using Downloadr.Cli.Features.Queue;
-using Downloadr.Cli.Infrastructure.Configuration;
+using Domain;
+using Persistence;
+using Queue;
+using Infrastructure.Configuration;
 
 public sealed class DownloadEngine : IDownloadEngine
 {
@@ -25,6 +25,10 @@ public sealed class DownloadEngine : IDownloadEngine
     private readonly ConcurrentDictionary<Guid, byte> inProgress = new();
     private readonly ConcurrentDictionary<Guid, byte> paused = new();
     private readonly ConcurrentDictionary<Guid, byte> cancelled = new();
+    private int desiredConcurrency;
+    private Channel<DownloadItem>? workChannel;
+    private int currentWorkerCount;
+    private CancellationToken runToken;
 
     public DownloadEngine(HttpClient httpClient,
                           IDownloadRepository repository,
@@ -36,6 +40,7 @@ public sealed class DownloadEngine : IDownloadEngine
         this.queueService = queueService;
         this.options = options;
         httpClient.Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
+        desiredConcurrency = Math.Max(1, options.MaxConcurrentDownloads);
     }
 
     public async Task RunAsync(CancellationToken cancellationToken, int? maxConcurrencyOverride = null)
@@ -48,13 +53,15 @@ public sealed class DownloadEngine : IDownloadEngine
         }
 
         var channel = Channel.CreateUnbounded<DownloadItem>();
+        workChannel = channel;
+        runToken = cancellationToken;
 
         // Producer
         _ = Task.Run(async () =>
         {
             while (!cancellationToken.IsCancellationRequested)
             {
-                foreach (var item in queueService.List().Where(i => i.Status is DownloadStatus.Queued or DownloadStatus.Paused))
+                foreach (var item in queueService.List().Where(i => i.Status is DownloadStatus.Queued))
                 {
                     if (inProgress.ContainsKey(item.Id))
                         continue;
@@ -66,7 +73,8 @@ public sealed class DownloadEngine : IDownloadEngine
         }, cancellationToken);
 
         // Consumers
-        var degree = Math.Max(1, maxConcurrencyOverride ?? options.MaxConcurrentDownloads);
+        var degree = Math.Max(1, maxConcurrencyOverride ?? Math.Max(options.MaxConcurrentDownloads, desiredConcurrency));
+        currentWorkerCount = degree;
         var workers = Enumerable.Range(0, degree)
                                 .Select(_ => WorkerAsync(channel.Reader, cancellationToken))
                                 .ToArray();
@@ -78,8 +86,19 @@ public sealed class DownloadEngine : IDownloadEngine
     {
         await foreach (var item in reader.ReadAllAsync(cancellationToken))
         {
+            while (inProgress.Count >= desiredConcurrency && !cancellationToken.IsCancellationRequested)
+            {
+                if (paused.ContainsKey(item.Id) || cancelled.ContainsKey(item.Id))
+                    break;
+                await Task.Delay(100, cancellationToken);
+            }
             if (!inProgress.TryAdd(item.Id, 0))
                 continue;
+            if (paused.ContainsKey(item.Id))
+            {
+                inProgress.TryRemove(item.Id, out _);
+                continue;
+            }
             try
             {
                 await DownloadAsync(item, cancellationToken);
@@ -133,6 +152,13 @@ public sealed class DownloadEngine : IDownloadEngine
             {
                 request.Headers.IfRange = new RangeConditionHeaderValue(item.LastModifiedUtc.Value);
             }
+        }
+
+        if (paused.ContainsKey(item.Id))
+        {
+            item.Status = DownloadStatus.Paused;
+            repository.Upsert(item);
+            return;
         }
 
         item.StartedAtUtc ??= DateTimeOffset.UtcNow;
@@ -238,7 +264,7 @@ public sealed class DownloadEngine : IDownloadEngine
 
                 var now = DateTimeOffset.UtcNow;
                 var elapsed = (now - lastUpdate).TotalSeconds;
-                if (elapsed >= 0.5)
+                if (elapsed >= 0.25)
                 {
                     item.AverageBytesPerSecond = item.AverageBytesPerSecond.HasValue
                         ? (item.AverageBytesPerSecond.Value * 0.7) + ((bytesSinceLast / elapsed) * 0.3)
@@ -281,6 +307,90 @@ public sealed class DownloadEngine : IDownloadEngine
     public void Cancel(Guid itemId)
     {
         cancelled[itemId] = 0;
+    }
+
+    public void CancelAll()
+    {
+        foreach (var item in repository.GetAll())
+        {
+            cancelled[item.Id] = 0;
+            item.Status = DownloadStatus.Cancelled;
+            repository.Upsert(item);
+        }
+    }
+
+    public int GetDesiredConcurrency() => desiredConcurrency;
+
+    public void SetDesiredConcurrency(int value)
+    {
+        desiredConcurrency = Math.Max(1, value);
+        var runningCount = inProgress.Count;
+        if (runningCount > desiredConcurrency)
+        {
+            var active = repository.GetAll()
+                .Where(i => i.Status == DownloadStatus.Running)
+                .OrderByDescending(i => i.StartedAtUtc ?? DateTimeOffset.MinValue)
+                .ThenByDescending(i => i.DestinationPath)
+                .ToList();
+            var toPause = Math.Min(runningCount - desiredConcurrency, active.Count);
+            foreach (var item in active.Take(toPause))
+            {
+                Pause(item.Id);
+            }
+        }
+        else if (runningCount < desiredConcurrency)
+        {
+            var deficit = desiredConcurrency - runningCount;
+            // Resume items that have already started (Paused/Cancelled) preferring highest completion %
+            var startedCandidates = repository.GetAll()
+                .Where(i => (i.Status == DownloadStatus.Paused || i.Status == DownloadStatus.Cancelled)
+                            && i.DownloadedBytes > 0)
+                .OrderByDescending(i => i.TotalBytes.HasValue && i.TotalBytes > 0
+                    ? (double)i.DownloadedBytes / i.TotalBytes.Value
+                    : (i.DownloadedBytes > 0 ? double.PositiveInfinity : 0))
+                .ThenByDescending(i => i.DownloadedBytes)
+                .Take(deficit)
+                .ToList();
+            foreach (var item in startedCandidates)
+            {
+                Resume(item.Id);
+                if (workChannel != null)
+                {
+                    workChannel.Writer.TryWrite(item);
+                }
+            }
+            deficit -= startedCandidates.Count;
+
+            // Any remaining capacity: proactively schedule queued items immediately
+            if (deficit > 0 && workChannel != null)
+            {
+                var queuedItems = repository.GetAll()
+                    .Where(i => i.Status == DownloadStatus.Queued)
+                    .Take(deficit)
+                    .ToList();
+                foreach (var q in queuedItems)
+                {
+                    workChannel.Writer.TryWrite(q);
+                }
+            }
+        }
+
+        // Ensure we have enough worker tasks to service the higher desired concurrency
+        if (workChannel != null && desiredConcurrency > currentWorkerCount)
+        {
+            var toAdd = desiredConcurrency - currentWorkerCount;
+            for (var i = 0; i < toAdd; i++)
+            {
+                _ = Task.Run(() => WorkerAsync(workChannel.Reader, runToken), runToken);
+                currentWorkerCount++;
+            }
+        }
+        else if (desiredConcurrency < currentWorkerCount)
+        {
+            // Allow workers to drain naturally; they will exit when channel completes at shutdown.
+            // We only adjust the gate (inProgress vs desiredConcurrency) and leave threads idle.
+            currentWorkerCount = desiredConcurrency;
+        }
     }
 
     public void PauseAll()

@@ -1,14 +1,15 @@
 namespace Downloadr.Cli.Infrastructure;
 
 using Spectre.Console.Cli;
-using Downloadr.Cli.Features.Queue;
-using Downloadr.Cli.Features.Ui;
+using Features.Queue;
+using Features.Ui;
 
 public static class Cli
 {
     public static IConfigurator ConfigureCommands( this IConfigurator configurator )
     {
         configurator.SetApplicationName("downloadr");
+        configurator.AddExample(["top"]);
 
         // default command shows live view and continues downloads
         configurator.AddCommand<TopCommand>("top")

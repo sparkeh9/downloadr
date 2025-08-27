@@ -4,7 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
-using Downloadr.Cli.Features.Domain;
+using Domain;
 
 public sealed class FileDownloadRepository : IDownloadRepository
 {
